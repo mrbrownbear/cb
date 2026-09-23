@@ -1,4 +1,65 @@
-function getWebGLContext(){let e=document.createElement("canvas");return e.getContext("webgl")||e.getContext("experimental-webgl")}function getGPUInfo(e){if(!e)return{vendor:"Unknown",renderer:"Unknown"};let t=e.getExtension("WEBGL_debug_renderer_info");return t?{vendor:e.getParameter(t.UNMASKED_VENDOR_WEBGL),renderer:e.getParameter(t.UNMASKED_RENDERER_WEBGL)}:{vendor:"Unavailable",renderer:"Unavailable"}}function isHighEndGPU(e){return["RTX","Titan","Quadro","GeForce GTX","GeForce RTX","Radeon RX","Radeon Pro","M1","M2","A100","Tesla","Apple"].some(t=>e.includes(t))}function runPerformanceTest(e,t){let n=[],o=performance.now();!function r(){let i=performance.now();n.push(i),n=n.filter(e=>i-e<1e3),i-o>2e3?(t(n.length),0):(e.clear(e.COLOR_BUFFER_BIT),requestAnimationFrame(r))}()}function loadScript(e){let t=document.createElement("script");t.src=e,document.body.appendChild(t)}function setSession(e){sessionStorage.setItem("gpuPerformance",e)}function getSession(){return sessionStorage.getItem("gpuPerformance")}function checkGraphicsCard(){let e=getSession();if(e){console.log(`Session detected: ${e}. Loading appropriate script...`),"high"===e&&loadScript("/wp-content/themes/cbd/templates/blocks/hero/fluid.js");return}let t=getWebGLContext();if(!t){console.log("WebGL is not supported. No script will be loaded.");return}let{vendor:n,renderer:o}=getGPUInfo(t);if(console.log("Detected GPU:",n,o),isHighEndGPU(o))return console.log(`High-End GPU Detected (${o}). Loading fluid.js...`),setSession("high"),void loadScript("/wp-content/themes/cbd/templates/blocks/hero/fluid.js");runPerformanceTest(t,e=>{e>45?(console.log(`Good performance detected (FPS: ${e}). Loading fluid.js...`),setSession("high"),loadScript("/wp-content/themes/cbd/templates/blocks/hero/fluid.js")):(console.log(`Low-end graphics detected (FPS: ${e}). No script will be loaded.`),setSession("low"))})}
-if (window.innerWidth > 480) {
-    checkGraphicsCard();
-}
+(function () {
+  'use strict'
+
+  const FLUID_SCRIPT = '/wp-content/themes/cbd/templates/blocks/hero/fluid.js'
+
+  function supportsWebGL() {
+    try {
+      const canvas = document.createElement('canvas')
+      return !!(
+        canvas.getContext('webgl2') ||
+        canvas.getContext('webgl') ||
+        canvas.getContext('experimental-webgl')
+      )
+    } catch (_) {
+      return false
+    }
+  }
+
+  function scriptAlreadyPresent(path) {
+    return Array.from(document.scripts).some(function (script) {
+      if (!script.src) return false
+      try {
+        return new URL(script.src, window.location.href).pathname === path
+      } catch (_) {
+        return false
+      }
+    })
+  }
+
+  function startFluid() {
+    if (window.innerWidth <= 480) return
+    if (!document.querySelector('.hero')) return
+    if (!supportsWebGL()) return
+
+    if (typeof window.initializeCBDHeroFluid === 'function') {
+      window.initializeCBDHeroFluid()
+      return
+    }
+
+    if (window.__cbdFluidLoaderStarted || scriptAlreadyPresent(FLUID_SCRIPT)) return
+    window.__cbdFluidLoaderStarted = true
+
+    const script = document.createElement('script')
+    script.src = FLUID_SCRIPT
+    script.async = true
+    script.onload = function () {
+      if (typeof window.initializeCBDHeroFluid === 'function') {
+        window.initializeCBDHeroFluid()
+      }
+    }
+    script.onerror = function () {
+      window.__cbdFluidLoaderStarted = false
+      console.warn('Hero fluid animation could not be loaded')
+    }
+    document.body.appendChild(script)
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startFluid, { once: true })
+  } else {
+    startFluid()
+  }
+
+  window.addEventListener('pageshow', startFluid)
+})()
