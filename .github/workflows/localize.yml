@@ -1,0 +1,101 @@
+name: Build fully local site
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/localize.yml
+
+permissions:
+  contents: write
+
+jobs:
+  localize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Capture clean source
+        shell: bash
+        run: |
+          curl --fail --location --compressed --retry 4 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 20 --max-time 120 \
+            -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36' \
+            -o source.html 'https://www.cbwebsitedesign.co.uk/'
+          test "$(wc -c < source.html)" -gt 30000
+          grep -qi 'Web Design London' source.html
+          if grep -qi 'Just a moment' source.html; then
+            echo 'Cloudflare challenge returned instead of site'
+            exit 1
+          fi
+
+      - name: Localize all first party assets
+        run: python3 tools/localize.py
+
+      - name: Add static hosting config
+        shell: bash
+        run: |
+          cat > vercel.json <<'EOF'
+          {
+            "cleanUrls": false,
+            "trailingSlash": false,
+            "headers": [
+              {
+                "source": "/(.*)",
+                "headers": [
+                  { "key": "X-Content-Type-Options", "value": "nosniff" }
+                ]
+              }
+            ]
+          }
+          EOF
+
+      - name: Verify local runtime
+        shell: bash
+        run: |
+          test -s index.html
+          test -s wp-content/themes/cbd/dist/core.bundle.js
+          test -s wp-content/themes/cbd/fonts/Matter-TRIAL-Bold.woff2
+          ! grep -q '/index.htmlwp-content/' index.html
+          ! grep -q '/__sitecloner/' index.html
+          ! grep -qi 'challenge-platform' index.html
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          s = Path('index.html').read_text(errors='ignore')
+          checks = [
+              r'<script\b[^>]*\bsrc=["\']https?://',
+              r'<img\b[^>]*\bsrc=["\']https?://',
+              r'<source\b[^>]*\bsrc=["\']https?://',
+              r'<video\b[^>]*\bsrc=["\']https?://',
+              r'<iframe\b[^>]*\bsrc=["\']https?://',
+              r'<link\b[^>]*\bhref=["\']https?://',
+          ]
+          bad = [pat for pat in checks if re.search(pat, s, re.I)]
+          if bad:
+              raise SystemExit('External runtime asset tags remain: ' + repr(bad))
+          print('index runtime references are local')
+          PY
+          if find . -type f -size +95M -print | grep -q .; then
+            echo 'A file exceeds GitHub safe size limit:'
+            find . -type f -size +95M -print
+            exit 1
+          fi
+
+      - name: Commit localized build
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+            exit 0
+          fi
+          git commit -m 'Localize all site assets and remove reload loop'
+          git push origin HEAD:main
