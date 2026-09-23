@@ -29,7 +29,7 @@ ATTR_RE = re.compile(r'''(?:src|href|poster|data-src|data-lazy-src|data-poster)\
 SRCSET_RE = re.compile(r'''(?:srcset|data-srcset)\s*=\s*["']([^"']+)["']''', re.I)
 CSS_URL_RE = re.compile(r'''url\(\s*["']?([^"')\s]+)''', re.I)
 IMPORT_RE = re.compile(r'''@import\s+(?:url\()?\s*["']?([^"')\s;]+)''', re.I)
-STRING_ASSET_RE = re.compile(r'''["']([^"']+\.(?:js|css|woff2?|ttf|otf|eot|png|jpe?g|webp|gif|svg|avif|mp4|webm|ico|json)(?:\?[^"']*)?)["']''', re.I)
+STRING_ASSET_RE = re.compile(r'''["']((?:(?:https?:)?//|/|\.\.?/)[^"']+\.(?:js|css|woff2?|ttf|otf|eot|png|jpe?g|webp|gif|svg|avif|mp4|webm|ico|json)(?:\?[^"']*)?)["']''', re.I)
 ABS_RE = re.compile(r'''https?://(?:www\.)?cbwebsitedesign\.co\.uk/[^\s"'<>\\)]+''', re.I)
 
 
@@ -41,6 +41,8 @@ def normalize_url(raw: str, base: str = BASE) -> str | None:
     if not raw:
         return None
     raw = html.unescape(raw.strip()).replace("\\/", "/")
+    if len(raw) > 800 or any(c in raw for c in "\r\n\t{}[]"):
+        return None
     if raw.startswith(("data:", "blob:", "about:", "mailto:", "tel:", "javascript:", "#")):
         return None
     if raw.startswith("//"):
@@ -59,11 +61,10 @@ def normalize_url(raw: str, base: str = BASE) -> str | None:
 
 
 def local_path(url: str) -> Path:
-    path = urlsplit(url).path
-    return ROOT / path.lstrip("/")
+    return ROOT / urlsplit(url).path.lstrip("/")
 
 
-def extract_urls(text: str, base: str = BASE) -> set[str]:
+def extract_urls(text: str, base: str = BASE, suffix: str = "") -> set[str]:
     found: set[str] = set()
     for m in ATTR_RE.finditer(text):
         u = normalize_url(m.group(1), base)
@@ -75,7 +76,11 @@ def extract_urls(text: str, base: str = BASE) -> set[str]:
             u = normalize_url(ref, base)
             if u:
                 found.add(u)
-    for regex in (CSS_URL_RE, IMPORT_RE, STRING_ASSET_RE, ABS_RE):
+
+    regexes = [STRING_ASSET_RE, ABS_RE]
+    if suffix.lower() in {"", ".html", ".css", ".svg"}:
+        regexes.extend([CSS_URL_RE, IMPORT_RE])
+    for regex in regexes:
         for m in regex.finditer(text):
             ref = m.group(1) if m.lastindex else m.group(0)
             u = normalize_url(ref, base)
@@ -91,6 +96,53 @@ def remove_tag_blocks(text: str, tag: str, predicate) -> str:
     return pattern.sub(repl, text)
 
 
+def strip_external_runtime_resources(source: str) -> str:
+    external = r'''(?:https?:)?//'''
+    source = re.sub(
+        rf'''<script\b(?=[^>]*\bsrc\s*=\s*["']{external})[^>]*>.*?</script\s*>''',
+        "", source, flags=re.I | re.S
+    )
+    source = re.sub(
+        rf'''<iframe\b(?=[^>]*\bsrc\s*=\s*["']{external})[^>]*>.*?</iframe\s*>''',
+        "", source, flags=re.I | re.S
+    )
+    source = re.sub(
+        rf'''<link\b(?=[^>]*\bhref\s*=\s*["']{external})[^>]*>''',
+        "", source, flags=re.I
+    )
+    source = re.sub(
+        rf'''<(?:img|source)\b(?=[^>]*\bsrc\s*=\s*["']{external})[^>]*>''',
+        "", source, flags=re.I
+    )
+    source = re.sub(
+        rf'''\s(?:srcset|data-srcset)\s*=\s*["'][^"']*{external}[^"']*["']''',
+        "", source, flags=re.I
+    )
+
+    def strip_media_src(m: re.Match) -> str:
+        tag = m.group(0)
+        return re.sub(rf'''\s+src\s*=\s*["']{external}[^"']*["']''', "", tag, flags=re.I)
+
+    source = re.sub(r'''<(?:video|audio)\b[^>]*>''', strip_media_src, source, flags=re.I)
+    return source
+
+
+def rewrite_internal_navigation(source: str) -> str:
+    def repl(m: re.Match) -> str:
+        before, quote, href = m.group(1), m.group(2), html.unescape(m.group(3).strip())
+        if not href.startswith("/") or href.startswith("//"):
+            return m.group(0)
+        parsed = urlsplit(href)
+        if parsed.path in {"", "/", "/index.html"} or parsed.fragment:
+            return m.group(0)
+        if Path(parsed.path).suffix.lower() in ASSET_EXTS:
+            return m.group(0)
+        absolute = "https://www.cbwebsitedesign.co.uk" + href
+        return f"<a{before}href={quote}{absolute}{quote}"
+
+    return re.sub(r'''<a([^>]*?)href\s*=\s*(["'])([^"']+)\2''', repl, source, flags=re.I)
+
+
 def clean_html(source: str) -> str:
     bad_markers = (
         "googletagmanager", "google-analytics", "doubleclick", "googleadservices",
@@ -104,13 +156,12 @@ def clean_html(source: str) -> str:
         return any(x in blob for x in bad_markers)
 
     source = remove_tag_blocks(source, "script", bad_script)
-    source = re.sub(r'''<script\b[^>]*\bsrc=["'][^"']*(?:challenge-platform|cloudflareinsights|cookieyes|hs-|hubspot|googletagmanager|google-analytics|googleadservices|bat\.bing|clarity\.ms)[^"']*["'][^>]*>\s*</script\s*>''', "", source, flags=re.I | re.S)
     source = re.sub(r'''<link\b[^>]*\brel=["'][^"']*(?:dns-prefetch|preconnect)[^"']*["'][^>]*>''', "", source, flags=re.I)
-
-    # Repair capture-style malformed paths if present and localise first-party URLs.
     source = source.replace("/index.htmlwp-content/", "/wp-content/")
     source = source.replace("/index.htmlwp-includes/", "/wp-includes/")
     source = re.sub(r'''https?://(?:www\.)?cbwebsitedesign\.co\.uk(?=/)''', "", source, flags=re.I)
+    source = strip_external_runtime_resources(source)
+    source = rewrite_internal_navigation(source)
 
     guard = r'''<script id="local-only-runtime">(function(){
 const own=u=>{try{const x=new URL(String(u&&u.url?u.url:u),location.href);return x.origin===location.origin||['data:','blob:','about:'].includes(x.protocol)}catch(_){return true}};
@@ -160,7 +211,7 @@ def rewrite_local_references(path: Path, source_url: str) -> set[str]:
         text = path.read_text(encoding="utf-8")
     except Exception:
         return set()
-    discovered = extract_urls(text, source_url)
+    discovered = extract_urls(text, source_url, path.suffix)
     original = text
     text = text.replace("/index.htmlwp-content/", "/wp-content/").replace("/index.htmlwp-includes/", "/wp-includes/")
     text = re.sub(r'''https?://(?:www\.)?cbwebsitedesign\.co\.uk(?=/)''', "", text, flags=re.I)
@@ -179,7 +230,7 @@ def main() -> None:
     cleaned = clean_html(raw)
     INDEX.write_text(cleaned, encoding="utf-8")
 
-    pending = extract_urls(raw) | extract_urls(cleaned)
+    pending = extract_urls(raw, BASE, ".html") | extract_urls(cleaned, BASE, ".html")
     done: set[str] = set()
     failures: dict[str, str] = {}
     passes = 0
@@ -232,7 +283,6 @@ def main() -> None:
     if missing:
         raise SystemExit("Missing core assets: " + ", ".join(missing))
 
-    # Never ship source capture or probe leftovers.
     SOURCE.unlink(missing_ok=True)
     for name in ("status.txt", "headers.txt"):
         (ROOT / name).unlink(missing_ok=True)
