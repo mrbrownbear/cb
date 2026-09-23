@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/localize.yml
+      - tools/localize.py
 
 permissions:
   contents: write
@@ -64,28 +65,91 @@ jobs:
           ! grep -q '/index.htmlwp-content/' index.html
           ! grep -q '/__sitecloner/' index.html
           ! grep -qi 'challenge-platform' index.html
+
           python3 - <<'PY'
+          from html.parser import HTMLParser
           from pathlib import Path
+          from urllib.parse import urlsplit, unquote
           import re
-          s = Path('index.html').read_text(errors='ignore')
-          checks = [
-              r'<script\b[^>]*\bsrc=["\']https?://',
-              r'<img\b[^>]*\bsrc=["\']https?://',
-              r'<source\b[^>]*\bsrc=["\']https?://',
-              r'<video\b[^>]*\bsrc=["\']https?://',
-              r'<iframe\b[^>]*\bsrc=["\']https?://',
-              r'<link\b[^>]*\bhref=["\']https?://',
+
+          root = Path('.')
+          source = Path('index.html').read_text(errors='ignore')
+          external_checks = [
+              r'<script\b[^>]*\bsrc=["\'](?:https?:)?//',
+              r'<img\b[^>]*\bsrc=["\'](?:https?:)?//',
+              r'<source\b[^>]*\bsrc=["\'](?:https?:)?//',
+              r'<video\b[^>]*\bsrc=["\'](?:https?:)?//',
+              r'<audio\b[^>]*\bsrc=["\'](?:https?:)?//',
+              r'<iframe\b[^>]*\bsrc=["\'](?:https?:)?//',
+              r'<link\b[^>]*\bhref=["\'](?:https?:)?//',
           ]
-          bad = [pat for pat in checks if re.search(pat, s, re.I)]
+          bad = [pat for pat in external_checks if re.search(pat, source, re.I)]
           if bad:
-              raise SystemExit('External runtime asset tags remain: ' + repr(bad))
-          print('index runtime references are local')
+              raise SystemExit('External runtime resource tags remain: ' + repr(bad))
+
+          asset_exts = {'.js','.css','.woff','.woff2','.ttf','.otf','.eot','.png','.jpg','.jpeg','.webp','.gif','.svg','.avif','.mp4','.webm','.ico','.json','.bin'}
+          refs = set()
+
+          class Parser(HTMLParser):
+              def handle_starttag(self, tag, attrs):
+                  a = dict(attrs)
+                  if tag in {'script','img','source','video','audio','iframe'}:
+                      for key in ('src','poster','data-src','data-lazy-src','data-poster'):
+                          if a.get(key): refs.add(a[key])
+                      for key in ('srcset','data-srcset'):
+                          if a.get(key):
+                              for part in a[key].split(','):
+                                  if part.strip(): refs.add(part.strip().split()[0])
+                  elif tag == 'link' and a.get('href'):
+                      refs.add(a['href'])
+
+          Parser().feed(source)
+          missing = []
+          for ref in refs:
+              if not ref or ref.startswith(('data:','blob:','about:','#','mailto:','tel:','javascript:','http://','https://','//')):
+                  continue
+              path = unquote(urlsplit(ref).path)
+              if not path or Path(path).suffix.lower() not in asset_exts:
+                  continue
+              p = root / path.lstrip('/')
+              if not p.is_file() or p.stat().st_size == 0:
+                  missing.append(path)
+          if missing:
+              raise SystemExit('Missing local asset files: ' + '\n'.join(sorted(set(missing))[:100]))
+          print(f'Validated {len(refs)} runtime resource references')
           PY
+
           if find . -type f -size +95M -print | grep -q .; then
             echo 'A file exceeds GitHub safe size limit:'
             find . -type f -size +95M -print
             exit 1
           fi
+
+      - name: Browser smoke test with outside network blocked
+        shell: bash
+        run: |
+          python3 -m http.server 4173 --bind 127.0.0.1 >/tmp/cb-http.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for i in {1..20}; do
+            curl --fail --silent http://127.0.0.1:4173/ >/dev/null && break
+            sleep 0.25
+          done
+          CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$CHROME" ]; then
+            echo 'Chrome not available, static verification already passed'
+            exit 0
+          fi
+          timeout 45 "$CHROME" \
+            --headless --no-sandbox --disable-gpu --disable-dev-shm-usage \
+            --disable-background-networking --disable-component-update --disable-sync \
+            --host-resolver-rules='MAP * 0.0.0.0, EXCLUDE 127.0.0.1' \
+            --virtual-time-budget=8000 --dump-dom http://127.0.0.1:4173/ \
+            >/tmp/rendered.html 2>/tmp/chrome.log
+          test -s /tmp/rendered.html
+          grep -qi 'Web Design London' /tmp/rendered.html
+          ! grep -qi 'Just a moment' /tmp/rendered.html
+          echo 'Browser smoke test passed'
 
       - name: Commit localized build
         shell: bash
