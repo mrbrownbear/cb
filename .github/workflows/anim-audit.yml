@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - .github/workflows/anim-audit.yml
+      - wp-content/themes/cbd/templates/blocks/hero/hero.js
+      - wp-content/themes/cbd/templates/blocks/hero/fluid.js
+      - wp-content/themes/cbd/templates/blocks/hero/fluid-core.js
 
 permissions:
   contents: read
@@ -32,50 +35,62 @@ jobs:
             const browser = await puppeteer.launch({
               executablePath: process.env.CHROME,
               headless: true,
-              args: ['--no-sandbox','--disable-dev-shm-usage','--enable-webgl','--ignore-gpu-blocklist','--use-angle=swiftshader']
+              args: ['--no-sandbox','--disable-dev-shm-usage','--enable-webgl','--ignore-gpu-blocklist','--enable-unsafe-swiftshader','--use-angle=swiftshader']
             });
             const page = await browser.newPage();
             await page.setViewport({width: 1440, height: 1000, deviceScaleFactor: 1});
+            const errors = [];
             const logs = [];
-            page.on('console', m => logs.push('CONSOLE ' + m.type() + ': ' + m.text()));
-            page.on('pageerror', e => logs.push('PAGEERROR: ' + e.message));
+            page.on('console', m => {
+              logs.push('CONSOLE ' + m.type() + ': ' + m.text());
+              if (m.type() === 'error' && !/site\.webmanifest/.test(m.text())) errors.push(m.text());
+            });
+            page.on('pageerror', e => errors.push(e.message));
             page.on('requestfailed', r => logs.push('REQUESTFAILED: ' + r.url() + ' :: ' + (r.failure()?.errorText || '')));
             await page.goto('http://127.0.0.1:4173/', {waitUntil: 'networkidle0', timeout: 30000});
-            await new Promise(r => setTimeout(r, 6000));
-            let report = await page.evaluate(() => ({
-              title: document.title,
+            await new Promise(r => setTimeout(r, 5000));
+
+            const before = await page.evaluate(() => ({
               hero: !!document.querySelector('.hero'),
               gradient: !!document.querySelector('.hero .gradient'),
               canvasCount: document.querySelectorAll('.hero canvas.hero-bg').length,
-              canvas: (() => { const c = document.querySelector('.hero canvas.hero-bg'); return c ? {width:c.width,height:c.height,clientWidth:c.clientWidth,clientHeight:c.clientHeight} : null; })(),
+              canvas: (() => { const c = document.querySelector('.hero canvas.hero-bg'); return c ? {width:c.width,height:c.height,clientWidth:c.clientWidth,clientHeight:c.clientHeight,state:c.dataset.fluidInitialized} : null; })(),
               gsap: typeof window.gsap,
               ScrollTrigger: typeof window.ScrollTrigger,
               Scroller: typeof window.Scroller,
-              scripts: [...document.scripts].map(s => s.src).filter(Boolean).filter(s => /cbd|hero|block|bundle/.test(s)),
-              animatedInline: [...document.querySelectorAll('[style]')].filter(el => /transform|opacity/.test(el.getAttribute('style')||'')).length,
-              readyState: document.readyState
+              animatedInline: [...document.querySelectorAll('[style]')].filter(el => /transform|opacity/.test(el.getAttribute('style')||'')).length
             }));
-            console.log('REPORT_BEFORE_MOVE=' + JSON.stringify(report));
+            console.log('REPORT_BEFORE_MOVE=' + JSON.stringify(before));
+
+            if (!before.hero) throw new Error('Hero missing');
+            if (before.canvasCount !== 1) throw new Error('Hero fluid canvas did not initialize exactly once');
+            if (!before.canvas || before.canvas.width < 500 || before.canvas.height < 300) throw new Error('Hero fluid canvas has invalid dimensions');
+            if (before.canvas.state !== 'true') throw new Error('Hero fluid canvas did not reach initialized state');
+            if (before.gsap !== 'object' || before.ScrollTrigger !== 'function' || before.Scroller !== 'object') throw new Error('Core animation runtime missing');
+
             const canvas = await page.$('.hero canvas.hero-bg');
-            if (canvas) {
-              const box = await canvas.boundingBox();
-              if (box) {
-                await page.mouse.move(box.x + box.width * .3, box.y + box.height * .35);
-                await page.mouse.move(box.x + box.width * .7, box.y + box.height * .65, {steps: 30});
-                await new Promise(r => setTimeout(r, 2500));
-              }
+            const box = await canvas.boundingBox();
+            if (box) {
+              await page.mouse.move(box.x + box.width * .25, box.y + box.height * .35);
+              await page.mouse.move(box.x + box.width * .75, box.y + box.height * .62, {steps: 35});
+              await new Promise(r => setTimeout(r, 2200));
             }
+
             await page.evaluate(() => window.scrollTo(0, Math.min(1800, document.body.scrollHeight - innerHeight)));
-            await new Promise(r => setTimeout(r, 2000));
-            report = await page.evaluate(() => ({
+            await new Promise(r => setTimeout(r, 1800));
+            const after = await page.evaluate(() => ({
               scrollY: window.scrollY,
               canvasCount: document.querySelectorAll('.hero canvas.hero-bg').length,
-              canvas: (() => { const c = document.querySelector('.hero canvas.hero-bg'); return c ? {width:c.width,height:c.height,clientWidth:c.clientWidth,clientHeight:c.clientHeight} : null; })(),
               animatedInline: [...document.querySelectorAll('[style]')].filter(el => /transform|opacity/.test(el.getAttribute('style')||'')).length,
               bodyClass: document.body.className
             }));
-            console.log('REPORT_AFTER_MOVE=' + JSON.stringify(report));
+            console.log('REPORT_AFTER_MOVE=' + JSON.stringify(after));
             console.log(logs.join('\n'));
+
+            if (after.canvasCount !== 1) throw new Error('Hero canvas duplicated or disappeared');
+            if (after.scrollY < 1000) throw new Error('Smooth scroll runtime did not move the page');
+            if (errors.length) throw new Error('Runtime errors: ' + errors.join(' | '));
+
             await browser.close();
           })().catch(e => { console.error(e); process.exit(1); });
           NODE
