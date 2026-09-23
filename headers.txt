@@ -1,0 +1,18 @@
+HTTP/2 200 
+date: Wed, 23 Sep 2026 13:49:25 GMT
+content-type: text/html; charset=UTF-8
+server: cloudflare
+last-modified: Wed, 23 Sep 2026 08:29:05 GMT
+cache-control: max-age=0
+expires: Wed, 23 Sep 2026 13:38:04 GMT
+access-control-allow-origin: *
+vary: Accept-Encoding
+cf-apo-via: tcache
+cf-cache-status: HIT
+speculation-rules: "/cdn-cgi/speculation"
+report-to: {"group":"cf-nel","max_age":604800,"endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=p6nfSOJo5LFYcQowP5kqOkezzaVT05pRzlaoYaqxSZocolyCN19Z9JTcywbLB8U6PkmQBNh%2BGprvlyvTLfCoym1Ssbpq9G20EQT52ldHtH5f5j%2FEDMCSEszomSMFBgLMyEARPZbemkqpc8Y%3D"}]}
+nel: {"report_to":"cf-nel","success_fraction":0.0,"max_age":604800}
+content-encoding: br
+cf-ray: a3fa033b898ee8be-LAX
+alt-svc: h3=":443"; ma=86400
+
