@@ -1,0 +1,9 @@
+{
+  "name": "CreativeWeb",
+  "short_name": "CreativeWeb",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fafafa",
+  "theme_color": "#fafafa",
+  "icons": []
+}
